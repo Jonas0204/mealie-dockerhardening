@@ -98,10 +98,8 @@ RUN apt-get update \
     build-essential \
     libpq-dev \
     libwebp-dev \
-    ffmpeg \
     # LDAP Dependencies
     libsasl2-dev libldap2-dev libssl-dev \
-    gnupg gnupg2 gnupg1 \
     && rm -rf /var/lib/apt/lists/*
 RUN python3 -m venv --upgrade-deps $VENV_PATH
 
@@ -118,7 +116,22 @@ COPY --from=packages * /dist/
 
 # The dependencies are already in place, so pip only installs mealie itself.
 RUN . $VENV_PATH/bin/activate \
-    && pip install --require-hashes -r /dist/requirements.txt --find-links /dist
+    && pip install --require-hashes -r /dist/requirements.txt --find-links /dist \
+    && pip uninstall -y pip
+
+###############################################
+# NLTK Data
+###############################################
+FROM python-base AS nltk-data
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV NLTK_DATA="/nltk_data/"
+COPY ./docker/setup_nltk_data.sh /setup_nltk_data.sh
+RUN chmod +x /setup_nltk_data.sh && /setup_nltk_data.sh
 
 ###############################################
 # Production Image
@@ -132,14 +145,13 @@ ENV GIT_COMMIT_HASH=$COMMIT
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
-    curl \
     ffmpeg \
     gosu \
-    iproute2 \
     libldap-common \
     libldap2 \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+RUN /usr/local/bin/python3 -m pip uninstall -y pip
 
 # create directory used for Docker Secrets
 RUN mkdir -p /run/secrets
@@ -147,23 +159,20 @@ RUN mkdir -p /run/secrets
 # Copy venv into image. It contains a fully-installed mealie backend and frontend.
 COPY --from=venv-builder $VENV_PATH $VENV_PATH
 
-# install nltk data for the ingredient parser
+# nltk data for the ingredient parser
 ENV NLTK_DATA="/nltk_data/"
-COPY ./docker/setup_nltk_data.sh $MEALIE_HOME/setup_nltk_data.sh
-RUN chmod +x $MEALIE_HOME/setup_nltk_data.sh && $MEALIE_HOME/setup_nltk_data.sh
+COPY --from=nltk-data /nltk_data/ /nltk_data/
 
 VOLUME [ "$MEALIE_HOME/data/" ]
 ENV APP_PORT=9000
 
 EXPOSE ${APP_PORT}
 
-COPY ./docker/healthcheck.sh $MEALIE_HOME/healthcheck.sh
-RUN chmod +x $MEALIE_HOME/healthcheck.sh
-HEALTHCHECK CMD $MEALIE_HOME/healthcheck.sh
+COPY ./docker/healthcheck.py $MEALIE_HOME/healthcheck.py
+HEALTHCHECK CMD python $MEALIE_HOME/healthcheck.py
 
 ENV HOST=0.0.0.0
 
-EXPOSE ${APP_PORT}
 COPY ./docker/entry.sh $MEALIE_HOME/run.sh
 
 RUN chmod +x $MEALIE_HOME/run.sh
